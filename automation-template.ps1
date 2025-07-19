@@ -1,20 +1,16 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
-  [int]$MaxWaitSeconds = 300,
-  [string]$LogPath = "$env:TEMP\Generic-Automation.log",
-  [string]$ARLog = 'C:\Program Files (x86)\ossec-agent\active-response\active-responses.log'
+  [string]$LogPath = "$env:TEMP\EnsureFirewall-script.log",
+  [string]$ARLog   = 'C:\Program Files (x86)\ossec-agent\active-response\active-responses.log'
 )
 
 $ErrorActionPreference = 'Stop'
 $HostName = $env:COMPUTERNAME
 $LogMaxKB = 100
-$LogKeep = 5
+$LogKeep  = 5
 
 function Write-Log {
-  param(
-    [string]$Message,
-    [ValidateSet('INFO','WARN','ERROR','DEBUG')]$Level = 'INFO'
-  )
+  param([string]$Message, [ValidateSet('INFO','WARN','ERROR','DEBUG')]$Level = 'INFO')
   $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
   $line = "[$ts][$Level] $Message"
   switch ($Level) {
@@ -39,30 +35,74 @@ function Rotate-Log {
   }
 }
 
+function Ensure-FirewallProfile {
+  param([string]$Profile)
+
+  Write-Log "Checking $Profile firewall profile..." 'INFO'
+
+  $status = Get-NetFirewallProfile -Profile $Profile
+  $changes = @()
+
+  if (-not $status.Enabled) {
+    Write-Log "$Profile firewall was disabled. Enabling it." 'WARN'
+    Set-NetFirewallProfile -Profile $Profile -Enabled True
+    $changes += 'enabled'
+  }
+
+  if (-not $status.LoggingAllowed) {
+    Write-Log "$Profile firewall logging was disabled. Enabling logging." 'WARN'
+    Set-NetFirewallProfile -Profile $Profile -LogAllowed True
+    $changes += 'log_allowed'
+  }
+
+  if (-not $status.LoggingBlocked) {
+    Write-Log "$Profile firewall logging for blocked connections was disabled. Enabling it." 'WARN'
+    Set-NetFirewallProfile -Profile $Profile -LogBlocked True
+    $changes += 'log_blocked'
+  }
+
+  if (-not $status.LogFileName) {
+    Write-Log "$Profile log file path is empty. Setting to default." 'WARN'
+    Set-NetFirewallProfile -Profile $Profile -LogFileName "%systemroot%\system32\LogFiles\Firewall\$Profile.log"
+    $changes += 'log_path'
+  }
+
+  return @{
+    profile = $Profile
+    changes = $changes
+    enabled = $true
+  }
+}
+
 Rotate-Log
 $runStart = Get-Date
-Write-Log "=== SCRIPT START ==="
+Write-Log "=== SCRIPT START : Ensure Firewall Enabled ==="
 
 try {
-  ### =============================================
-  ### >> PLACE YOUR ACTION LOGIC HERE <<
-  ### =============================================
+  $results = @{
+    timestamp = (Get-Date).ToString('o')
+    host      = $HostName
+    action    = 'ensure_firewall_enabled'
+    enforced  = @()
+  }
 
+  foreach ($profile in @('Domain', 'Private', 'Public')) {
+    $results.enforced += Ensure-FirewallProfile -Profile $profile
+  }
 
-  $result | ConvertTo-Json -Compress | Out-File -FilePath $ARLog -Append -Encoding ascii -Width 2000
-  Write-Log "JSON appended to $ARLog" 'INFO'
-
+  $results | ConvertTo-Json -Compress | Out-File -FilePath $ARLog -Append -Encoding ascii -Width 2000
+  Write-Log "Firewall enforcement JSON appended to $ARLog" 'INFO'
 }
 catch {
   Write-Log $_.Exception.Message 'ERROR'
-  $errorLog = [pscustomobject]@{
+  $errorObj = [pscustomobject]@{
     timestamp = (Get-Date).ToString('o')
-    host = $HostName
-    action = "generic_error"
-    status = "error"
-    error = $_.Exception.Message
+    host      = $HostName
+    action    = 'ensure_firewall_enabled'
+    status    = 'error'
+    error     = $_.Exception.Message
   }
-  $errorLog | ConvertTo-Json -Compress | Out-File -FilePath $ARLog -Append -Encoding ascii -Width 2000
+  $errorObj | ConvertTo-Json -Compress | Out-File -FilePath $ARLog -Append -Encoding ascii -Width 2000
 }
 finally {
   $dur = [int]((Get-Date) - $runStart).TotalSeconds
