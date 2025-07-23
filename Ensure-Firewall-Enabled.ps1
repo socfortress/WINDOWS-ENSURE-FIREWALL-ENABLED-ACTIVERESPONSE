@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+  [string]$RunID = "",
   [string]$LogPath = "$env:TEMP\EnsureFirewall-script.log",
   [string]$ARLog   = 'C:\Program Files (x86)\ossec-agent\active-response\active-responses.log'
 )
@@ -76,11 +77,12 @@ function Ensure-FirewallProfile {
 
 Rotate-Log
 $runStart = Get-Date
-Write-Log "=== SCRIPT START : Ensure Firewall Enabled ==="
+Write-Log "=== SCRIPT START : Ensure Firewall Enabled (RunID: $RunID) ==="
 
 try {
   $results = @{
     timestamp = (Get-Date).ToString('o')
+    run_id    = $RunID
     host      = $HostName
     action    = 'ensure_firewall_enabled'
     enforced  = @()
@@ -91,12 +93,13 @@ try {
   }
 
   $results | ConvertTo-Json -Compress | Out-File -FilePath $ARLog -Append -Encoding ascii -Width 2000
-  Write-Log "Firewall enforcement JSON appended to $ARLog" 'INFO'
+  Write-Log "Firewall enforcement JSON (RunID: $RunID) appended to $ARLog" 'INFO'
 }
 catch {
   Write-Log $_.Exception.Message 'ERROR'
   $errorObj = [pscustomobject]@{
     timestamp = (Get-Date).ToString('o')
+    run_id    = $RunID
     host      = $HostName
     action    = 'ensure_firewall_enabled'
     status    = 'error'
@@ -106,5 +109,5 @@ catch {
 }
 finally {
   $dur = [int]((Get-Date) - $runStart).TotalSeconds
-  Write-Log "=== SCRIPT END : duration ${dur}s ==="
+  Write-Log "=== SCRIPT END : duration ${dur}s (RunID: $RunID) ==="
 }
