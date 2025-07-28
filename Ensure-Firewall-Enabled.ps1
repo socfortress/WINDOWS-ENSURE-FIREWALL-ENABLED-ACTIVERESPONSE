@@ -93,6 +93,7 @@ try {
     host      = $HostName
     action    = 'ensure_firewall_enabled'
     enforced  = @()
+    copilot_soar = $true
   }
 
   foreach ($profile in @('Domain', 'Private', 'Public')) {
@@ -109,6 +110,7 @@ catch {
     action    = 'ensure_firewall_enabled'
     status    = 'error'
     error     = $_.Exception.Message
+    copilot_soar = $true
   }
   $errorObj | ConvertTo-Json -Compress | Out-File -FilePath $ARLog -Encoding ascii -Width 2000
 }
