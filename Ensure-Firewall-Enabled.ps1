@@ -92,8 +92,8 @@ try {
     timestamp = (Get-Date).ToString('o')
     host      = $HostName
     action    = 'ensure_firewall_enabled'
-    enforced  = @()
-    copilot_soar = $true
+    results  = @()
+    copilot_action = $true
   }
 
   foreach ($profile in @('Domain', 'Private', 'Public')) {
@@ -110,7 +110,7 @@ catch {
     action    = 'ensure_firewall_enabled'
     status    = 'error'
     error     = $_.Exception.Message
-    copilot_soar = $true
+    copilot_action = $true
   }
   $errorObj | ConvertTo-Json -Compress | Out-File -FilePath $ARLog -Encoding ascii -Width 2000
 }
@@ -118,3 +118,4 @@ finally {
   $dur = [int]((Get-Date) - $runStart).TotalSeconds
   Write-Log "=== SCRIPT END : duration ${dur}s ==="
 }
+
