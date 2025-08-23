@@ -1,5 +1,5 @@
 {
-  "copilot_action_name": "WINDOWS-ENSURE-FIREWALL-ENABLED-ACTIVERESPONSE",
+  "copilot_action_name": "WINDOWS-ENSURE-FIREWALL-ENABLED-COPILOT-ACTION",
   "description": "Ensures that Windows Defender Firewall is enabled and properly configured across all profiles (Domain, Private, and Public). Automatically enables firewall, logging for allowed and blocked connections, and sets default log paths when missing.",
   "technology": "Windows",
   "icon": "windows",
