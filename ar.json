@@ -25,7 +25,7 @@
     "Logging of blocked connections is enabled",
     "Log file path is set to default if missing"
   ],
-  "repo_url": "https://raw.githubusercontent.com/socfortress/WINDOWS-ENSURE-FIREWALL-ENABLED-COPILOT-ACTION/refs/heads/main/",
+  "repo_url": "https://raw.githubusercontent.com/socfortress/WINDOWS-ENSURE-FIREWALL-ENABLED-COPILOT-ACTION/refs/heads/main",
   "script_name": "Ensure-Firewall-Enabled.ps1",
   "version": "1.0.0",
   "last_updated": "2025-08-22T00:00:00Z"
