@@ -9,6 +9,12 @@ $HostName = $env:COMPUTERNAME
 $LogMaxKB = 100
 $LogKeep  = 5
 
+function Ensure-LogFile {
+  $dir = Split-Path -Parent $LogPath
+  if ($dir -and -not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
+  if (-not (Test-Path $LogPath)) { New-Item -Path $LogPath -ItemType File -Force | Out-Null }
+}
+
 function Write-Log {
   param([string]$Message, [ValidateSet('INFO','WARN','ERROR','DEBUG')]$Level = 'INFO')
   $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
@@ -19,7 +25,7 @@ function Write-Log {
     'DEBUG' { if ($PSCmdlet.MyInvocation.BoundParameters.ContainsKey('Verbose')) { Write-Verbose $line } }
     default { Write-Host $line }
   }
-  Add-Content -Path $LogPath -Value $line -Encoding utf8
+  try { Add-Content -Path $LogPath -Value $line -Encoding utf8 } catch {}
 }
 
 function Rotate-Log {
@@ -42,83 +48,157 @@ function Now-Timestamp {
 function Write-NDJSONLines {
   param([string[]]$JsonLines,[string]$Path=$ARLog)
   $tmp = Join-Path $env:TEMP ("arlog_{0}.tmp" -f ([guid]::NewGuid().ToString("N")))
+  $dir = Split-Path -Parent $Path
+  if ($dir -and -not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
   Set-Content -Path $tmp -Value ($JsonLines -join [Environment]::NewLine) -Encoding ascii -Force
   try { Move-Item -Path $tmp -Destination $Path -Force } catch { Move-Item -Path $tmp -Destination ($Path + '.new') -Force }
 }
 
+function Test-Admin {
+  try { return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+  catch { return $false }
+}
+
+function _B($v) { return [bool]$v }
+function _S($v) { if ($null -eq $v) { return "" } else { return [string]$v } }
+
 function Ensure-FirewallProfile {
   param([ValidateSet('Domain','Private','Public')][string]$Profile)
 
-  Write-Log "Checking $Profile firewall profile..." 'INFO'
+  Write-Log "Checking $($Profile) firewall profile..." 'INFO'
 
-  $before = Get-NetFirewallProfile -Profile $Profile
-  $changes = @()
-
-  if (-not $before.Enabled) {
-    Write-Log "$Profile firewall was disabled. Enabling it." 'WARN'
-    Set-NetFirewallProfile -Profile $Profile -Enabled True
-    $changes += 'enabled'
-  }
-
-  if (-not $before.LogAllowed) {
-    Write-Log "${Profile}: enabling logging of allowed connections." 'WARN'
-    Set-NetFirewallProfile -Profile $Profile -LogAllowed True
-    $changes += 'log_allowed'
-  }
-
-  if (-not $before.LogBlocked) {
-    Write-Log "${Profile}: enabling logging of blocked connections." 'WARN'
-    Set-NetFirewallProfile -Profile $Profile -LogBlocked True
-    $changes += 'log_blocked'
-  }
-
-  if (-not $before.LogFileName) {
-    Write-Log "${Profile}: setting default log path." 'WARN'
-    Set-NetFirewallProfile -Profile $Profile -LogFileName "%systemroot%\system32\LogFiles\Firewall\pfirewall.log"
-    $changes += 'log_path'
-  }
-
-  $after = Get-NetFirewallProfile -Profile $Profile
-  $afterActive = Get-NetFirewallProfile -Profile $Profile -PolicyStore ActiveStore
-
-  $policyBlocked = $false
-  if ($changes -contains 'log_allowed' -and -not $afterActive.LogAllowed) { $policyBlocked = $true }
-  if ($changes -contains 'log_blocked' -and -not $afterActive.LogBlocked) { $policyBlocked = $true }
-
-  [pscustomobject]@{
+  $result = [ordered]@{
     profile        = $Profile
-    before         = [pscustomobject]@{
-      enabled       = [bool]$before.Enabled
-      log_allowed   = [bool]$before.LogAllowed
-      log_blocked   = [bool]$before.LogBlocked
-      log_file_name = [string]$before.LogFileName
-    }
-    after          = [pscustomobject]@{
-      enabled       = [bool]$after.Enabled
-      log_allowed   = [bool]$after.LogAllowed
-      log_blocked   = [bool]$after.LogBlocked
-      log_file_name = [string]$after.LogFileName
-    }
-    active_store   = [pscustomobject]@{
-      enabled       = [bool]$afterActive.Enabled
-      log_allowed   = [bool]$afterActive.LogAllowed
-      log_blocked   = [bool]$afterActive.LogBlocked
-      log_file_name = [string]$afterActive.LogFileName
-    }
-    changes        = $changes
+    changes        = @()
     enforced       = $true
-    policy_blocked = $policyBlocked
+    policy_blocked = $false
+    errors         = @()
   }
+
+  try { $before = Get-NetFirewallProfile -Profile $Profile -ErrorAction Stop } catch {
+    $result.enforced = $false
+    $result.errors  += "Get-NetFirewallProfile(before): $($_.Exception.Message)"
+    return [pscustomobject]$result
+  }
+
+  $isAdmin = Test-Admin
+  if (-not $isAdmin) {
+    Write-Log "Not running elevated; will not modify settings, only report." 'WARN'
+  } else {
+    if (-not ($before.Enabled)) {
+      try {
+        Write-Log "$($Profile) firewall was disabled. Enabling it." 'WARN'
+        Set-NetFirewallProfile -Profile $Profile -Enabled True -ErrorAction Stop
+        $result.changes += 'enabled'
+      } catch {
+        $result.errors  += "Set Enabled: $($_.Exception.Message)"
+        $result.enforced = $false
+      }
+    }
+
+    if (-not (_B $before.LogAllowed)) {
+      try {
+        Write-Log "$($Profile): enabling logging of allowed connections." 'WARN'
+        Set-NetFirewallProfile -Profile $Profile -LogAllowed True -ErrorAction Stop
+        $result.changes += 'log_allowed'
+      } catch {
+        $result.errors  += "Set LogAllowed: $($_.Exception.Message)"
+        $result.enforced = $false
+      }
+    }
+
+    if (-not (_B $before.LogBlocked)) {
+      try {
+        Write-Log "$($Profile): enabling logging of blocked connections." 'WARN'
+        Set-NetFirewallProfile -Profile $Profile -LogBlocked True -ErrorAction Stop
+        $result.changes += 'log_blocked'
+      } catch {
+        $result.errors  += "Set LogBlocked: $($_.Exception.Message)"
+        $result.enforced = $false
+      }
+    }
+
+    if ([string]::IsNullOrWhiteSpace( (_S $before.LogFileName) )) {
+      try {
+        Write-Log "$($Profile): setting default log path." 'WARN'
+        Set-NetFirewallProfile -Profile $Profile -LogFileName "%systemroot%\system32\LogFiles\Firewall\pfirewall.log" -ErrorAction Stop
+        $result.changes += 'log_path'
+      } catch {
+        $result.errors  += "Set LogFileName: $($_.Exception.Message)"
+        $result.enforced = $false
+      }
+    }
+  }
+
+  try { $after = Get-NetFirewallProfile -Profile $Profile -ErrorAction Stop } catch { $after = $null; $result.errors += "Get-NetFirewallProfile(after): $($_.Exception.Message)"; $result.enforced = $false }
+  try { $afterActive = Get-NetFirewallProfile -Profile $Profile -PolicyStore ActiveStore -ErrorAction Stop } catch { $afterActive = $null; $result.errors += "Get-NetFirewallProfile(ActiveStore): $($_.Exception.Message)" }
+
+  if ($afterActive) {
+    if (($result.changes -contains 'log_allowed') -and -not (_B $afterActive.LogAllowed)) { $result.policy_blocked = $true }
+    if (($result.changes -contains 'log_blocked') -and -not (_B $afterActive.LogBlocked)) { $result.policy_blocked = $true }
+  }
+
+  $result.before = [pscustomobject]@{
+    enabled       = _B $before.Enabled
+    log_allowed   = _B $before.LogAllowed
+    log_blocked   = _B $before.LogBlocked
+    log_file_name = _S $before.LogFileName
+  }
+
+  if ($after) {
+    $result.after = [pscustomobject]@{
+      enabled       = _B $after.Enabled
+      log_allowed   = _B $after.LogAllowed
+      log_blocked   = _B $after.LogBlocked
+      log_file_name = _S $after.LogFileName
+    }
+  }
+
+  if ($afterActive) {
+    $result.active_store = [pscustomobject]@{
+      enabled       = _B $afterActive.Enabled
+      log_allowed   = _B $afterActive.LogAllowed
+      log_blocked   = _B $afterActive.LogBlocked
+      log_file_name = _S $afterActive.LogFileName
+    }
+  }
+
+  return [pscustomobject]$result
 }
 
+Ensure-LogFile
 Rotate-Log
 $runStart = Get-Date
-Write-Log "=== SCRIPT START : Ensure Firewall Enabled ==="
+Write-Log "=== SCRIPT START : Ensure Firewall Enabled ===" 'INFO'
 
 try {
   $ts = Now-Timestamp
-  $details = New-Object System.Collections.Generic.List[object]
+  $lines = @()
 
+  $svc = Get-Service -Name MpsSvc -ErrorAction SilentlyContinue
+  $isAdmin = Test-Admin
+  $verify = [pscustomobject]@{
+    timestamp      = $ts
+    host           = $HostName
+    action         = 'ensure_firewall_enabled'
+    copilot_action = $true
+    type           = 'verify_source'
+    os_version     = (Get-CimInstance Win32_OperatingSystem | Select-Object -ExpandProperty Version)
+    ps_version     = $PSVersionTable.PSVersion.ToString()
+    admin          = $isAdmin
+    service        = @{
+      name   = 'MpsSvc'
+      status = if ($svc) { $svc.Status } else { 'NotFound' }
+    }
+    modules        = @('NetSecurity')
+  }
+  $lines += ($verify | ConvertTo-Json -Compress -Depth 5)
+
+  if ($svc -and $svc.Status -ne 'Running') {
+    Write-Log "Windows Firewall service (MpsSvc) is not Running (status=$($svc.Status))." 'WARN'
+  }
+
+  $details = New-Object System.Collections.Generic.List[object]
   foreach ($profile in @('Domain','Private','Public')) {
     try {
       $details.Add( (Ensure-FirewallProfile -Profile $profile) )
@@ -127,7 +207,8 @@ try {
       $details.Add([pscustomobject]@{
         profile        = $profile
         enforced       = $false
-        error          = $_.Exception.Message
+        changes        = @()
+        errors         = @("Unhandled: $($_.Exception.Message)")
         policy_blocked = $false
       })
     }
@@ -137,9 +218,6 @@ try {
   $errorsCount  = ($details | Where-Object { $_.enforced -eq $false }).Count
   $policyCount  = ($details | Where-Object { $_.policy_blocked }).Count
 
-  $lines = @()
-
-  # Summary
   $lines += ([pscustomobject]@{
     timestamp        = $ts
     host             = $HostName
@@ -154,7 +232,6 @@ try {
     duration_s       = [math]::Round(((Get-Date)-$runStart).TotalSeconds,1)
   } | ConvertTo-Json -Compress -Depth 5)
 
-  # Per-profile
   foreach ($d in $details) {
     $lines += ([pscustomobject]@{
       timestamp      = $ts
@@ -169,8 +246,8 @@ try {
       before         = $d.before
       after          = $d.after
       active_store   = $d.active_store
-      error          = $d.error
-    } | ConvertTo-Json -Compress -Depth 6)
+      errors         = $d.errors
+    } | ConvertTo-Json -Compress -Depth 7)
   }
 
   if ($policyCount -gt 0) {
