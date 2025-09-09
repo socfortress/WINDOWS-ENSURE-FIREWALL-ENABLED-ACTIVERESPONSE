@@ -1,32 +1,10 @@
 {
   "copilot_action_name": "WINDOWS-ENSURE-FIREWALL-ENABLED-COPILOT-ACTION",
-  "description": "Ensures that Windows Defender Firewall is enabled and properly configured across all profiles (Domain, Private, and Public). Automatically enables firewall, logging for allowed and blocked connections, and sets default log paths when missing.",
+  "description": "Ensures Windows Defender Firewall is enabled and correctly configured across Domain, Private, and Public profiles. Verifies service state, enables profiles when disabled, turns on logging for allowed and blocked connections, and sets a default log path if missing. Emits NDJSON with a verification record, a summary, and per-profile details.",
   "technology": "Windows",
   "icon": "windows",
-  "script_parameters": [
-    {
-      "name": "LogPath",
-      "type": "string",
-      "required": false,
-      "description": "Path to the rotating script log for human-readable execution traces.",
-      "default": "%TEMP%/EnsureFirewall-script.log"
-    },
-    {
-      "name": "ARLog",
-      "type": "string",
-      "required": false,
-      "description": "Path where the active response JSON result will be stored. Uses overwrite-safe NDJSON logging.",
-      "default": "C:\\Program Files (x86)\\ossec-agent\\active-response\\active-responses.log"
-    }
-  ],
-  "enforced_policies": [
-    "Firewall is enabled for Domain, Private, and Public profiles",
-    "Logging of allowed connections is enabled",
-    "Logging of blocked connections is enabled",
-    "Log file path is set to default if missing"
-  ],
-  "repo_url": "https://raw.githubusercontent.com/socfortress/WINDOWS-ENSURE-FIREWALL-ENABLED-COPILOT-ACTION/refs/heads/main",
+  "repo_url": "https://raw.githubusercontent.com/socfortress/WINDOWS-ENSURE-FIREWALL-ENABLED-COPILOT-ACTION/refs/heads/main/Ensure-Firewall-Enabled.ps1",
   "script_name": "Ensure-Firewall-Enabled.ps1",
   "version": "1.0.0",
-  "last_updated": "2025-08-22T00:00:00Z"
+  "last_updated": "2025-09-09T00:00:00Z"
 }
