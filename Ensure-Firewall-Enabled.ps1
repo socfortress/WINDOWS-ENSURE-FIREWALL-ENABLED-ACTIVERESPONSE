@@ -62,6 +62,138 @@ function Test-Admin {
 function _B($v) { return [bool]$v }
 function _S($v) { if ($null -eq $v) { return "" } else { return [string]$v } }
 
+$HasNetSecurity =
+  [bool](Get-Command Get-NetFirewallProfile -ErrorAction SilentlyContinue) -and
+  [bool](Get-Command Set-NetFirewallProfile -ErrorAction SilentlyContinue)
+
+function Get-LegacyFirewallProfileType {
+  param([ValidateSet('Domain','Private','Public')][string]$Profile)
+
+  switch ($Profile) {
+    'Domain'  { return 1 }
+    'Private' { return 2 }
+    'Public'  { return 4 }
+  }
+}
+
+function Get-LegacyFirewallProfile {
+  param([ValidateSet('Domain','Private','Public')][string]$Profile)
+
+  $fw = New-Object -ComObject HNetCfg.FwPolicy2
+  $type = Get-LegacyFirewallProfileType -Profile $Profile
+
+  $registryProfile = switch ($Profile) {
+    'Domain'  { 'DomainProfile' }
+    'Private' { 'StandardProfile' }
+    'Public'  { 'PublicProfile' }
+  }
+
+  $loggingPath = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\$registryProfile\Logging"
+
+  $logAllowed = $false
+  $logBlocked = $false
+  $logFileName = ''
+
+  if (Test-Path $loggingPath) {
+    $logging = Get-ItemProperty -Path $loggingPath -ErrorAction SilentlyContinue
+
+    if ($null -ne $logging.LogSuccessfulConnections) {
+      $logAllowed = ([int]$logging.LogSuccessfulConnections -eq 1)
+    }
+
+    if ($null -ne $logging.LogDroppedPackets) {
+      $logBlocked = ([int]$logging.LogDroppedPackets -eq 1)
+    }
+
+    if ($logging.LogFilePath) {
+      $logFileName = [string]$logging.LogFilePath
+    }
+  }
+
+  return [pscustomobject]@{
+    Enabled     = [bool]$fw.FirewallEnabled($type)
+    LogAllowed  = $logAllowed
+    LogBlocked  = $logBlocked
+    LogFileName = $logFileName
+  }
+}
+
+function Invoke-LegacyFirewallNetsh {
+  param([string[]]$Arguments)
+
+  $output = & netsh.exe @Arguments 2>&1
+
+  if ($LASTEXITCODE -ne 0) {
+    throw "netsh failed with exit code $LASTEXITCODE`: $($output -join ' ')"
+  }
+}
+
+function Set-LegacyFirewallProfile {
+  param(
+    [ValidateSet('Domain','Private','Public')][string]$Profile,
+    [ValidateSet('Enabled','LogAllowed','LogBlocked','LogFileName')][string]$Setting,
+    $Value
+  )
+
+  $netshProfile = switch ($Profile) {
+    'Domain'  { 'domainprofile' }
+    'Private' { 'privateprofile' }
+    'Public'  { 'publicprofile' }
+  }
+
+  switch ($Setting) {
+
+    'Enabled' {
+      $state = if ([bool]$Value) { 'on' } else { 'off' }
+
+      Invoke-LegacyFirewallNetsh @(
+        'advfirewall',
+        'set',
+        $netshProfile,
+        'state',
+        $state
+      )
+    }
+
+    'LogAllowed' {
+      $state = if ([bool]$Value) { 'enable' } else { 'disable' }
+
+      Invoke-LegacyFirewallNetsh @(
+        'advfirewall',
+        'set',
+        $netshProfile,
+        'logging',
+        'allowedconnections',
+        $state
+      )
+    }
+
+    'LogBlocked' {
+      $state = if ([bool]$Value) { 'enable' } else { 'disable' }
+
+      Invoke-LegacyFirewallNetsh @(
+        'advfirewall',
+        'set',
+        $netshProfile,
+        'logging',
+        'droppedconnections',
+        $state
+      )
+    }
+
+    'LogFileName' {
+      Invoke-LegacyFirewallNetsh @(
+        'advfirewall',
+        'set',
+        $netshProfile,
+        'logging',
+        'filename',
+        [string]$Value
+      )
+    }
+  }
+}
+
 function Ensure-FirewallProfile {
   param([ValidateSet('Domain','Private','Public')][string]$Profile)
 
@@ -75,9 +207,17 @@ function Ensure-FirewallProfile {
     errors         = @()
   }
 
-  try { $before = Get-NetFirewallProfile -Profile $Profile -ErrorAction Stop } catch {
+  try {
+    if ($HasNetSecurity) {
+      $before = Get-NetFirewallProfile -Profile $Profile -ErrorAction Stop
+    }
+    else {
+      $before = Get-LegacyFirewallProfile -Profile $Profile
+    }
+  }
+  catch {
     $result.enforced = $false
-    $result.errors  += "Get-NetFirewallProfile(before): $($_.Exception.Message)"
+    $result.errors += "Get firewall profile (before): $($_.Exception.Message)"
     return [pscustomobject]$result
   }
 
@@ -88,10 +228,18 @@ function Ensure-FirewallProfile {
     if (-not ($before.Enabled)) {
       try {
         Write-Log "$($Profile) firewall was disabled. Enabling it." 'WARN'
-        Set-NetFirewallProfile -Profile $Profile -Enabled True -ErrorAction Stop
+
+        if ($HasNetSecurity) {
+          Set-NetFirewallProfile -Profile $Profile -Enabled True -ErrorAction Stop
+        }
+        else {
+          Set-LegacyFirewallProfile -Profile $Profile -Setting Enabled -Value $true
+        }
+
         $result.changes += 'enabled'
-      } catch {
-        $result.errors  += "Set Enabled: $($_.Exception.Message)"
+      }
+      catch {
+        $result.errors += "Set Enabled: $($_.Exception.Message)"
         $result.enforced = $false
       }
     }
@@ -99,10 +247,18 @@ function Ensure-FirewallProfile {
     if (-not (_B $before.LogAllowed)) {
       try {
         Write-Log "$($Profile): enabling logging of allowed connections." 'WARN'
-        Set-NetFirewallProfile -Profile $Profile -LogAllowed True -ErrorAction Stop
+
+        if ($HasNetSecurity) {
+          Set-NetFirewallProfile -Profile $Profile -LogAllowed True -ErrorAction Stop
+        }
+        else {
+          Set-LegacyFirewallProfile -Profile $Profile -Setting LogAllowed -Value $true
+        }
+
         $result.changes += 'log_allowed'
-      } catch {
-        $result.errors  += "Set LogAllowed: $($_.Exception.Message)"
+      }
+      catch {
+        $result.errors += "Set LogAllowed: $($_.Exception.Message)"
         $result.enforced = $false
       }
     }
@@ -110,10 +266,18 @@ function Ensure-FirewallProfile {
     if (-not (_B $before.LogBlocked)) {
       try {
         Write-Log "$($Profile): enabling logging of blocked connections." 'WARN'
-        Set-NetFirewallProfile -Profile $Profile -LogBlocked True -ErrorAction Stop
+
+        if ($HasNetSecurity) {
+          Set-NetFirewallProfile -Profile $Profile -LogBlocked True -ErrorAction Stop
+        }
+        else {
+          Set-LegacyFirewallProfile -Profile $Profile -Setting LogBlocked -Value $true
+        }
+
         $result.changes += 'log_blocked'
-      } catch {
-        $result.errors  += "Set LogBlocked: $($_.Exception.Message)"
+      }
+      catch {
+        $result.errors += "Set LogBlocked: $($_.Exception.Message)"
         $result.enforced = $false
       }
     }
@@ -121,17 +285,59 @@ function Ensure-FirewallProfile {
     if ([string]::IsNullOrWhiteSpace( (_S $before.LogFileName) )) {
       try {
         Write-Log "$($Profile): setting default log path." 'WARN'
-        Set-NetFirewallProfile -Profile $Profile -LogFileName "%systemroot%\system32\LogFiles\Firewall\pfirewall.log" -ErrorAction Stop
+
+        $defaultLog = "%systemroot%\system32\LogFiles\Firewall\pfirewall.log"
+
+        if ($HasNetSecurity) {
+          Set-NetFirewallProfile `
+            -Profile $Profile `
+            -LogFileName $defaultLog `
+            -ErrorAction Stop
+        }
+        else {
+          Set-LegacyFirewallProfile `
+            -Profile $Profile `
+            -Setting LogFileName `
+            -Value $defaultLog
+        }
+
         $result.changes += 'log_path'
-      } catch {
-        $result.errors  += "Set LogFileName: $($_.Exception.Message)"
+      }
+      catch {
+        $result.errors += "Set LogFileName: $($_.Exception.Message)"
         $result.enforced = $false
       }
     }
   }
+  try {
+    if ($HasNetSecurity) {
+      $after = Get-NetFirewallProfile -Profile $Profile -ErrorAction Stop
+    }
+    else {
+      $after = Get-LegacyFirewallProfile -Profile $Profile
+    }
+  }
+  catch {
+    $after = $null
+    $result.errors += "Get firewall profile (after): $($_.Exception.Message)"
+    $result.enforced = $false
+  }
 
-  try { $after = Get-NetFirewallProfile -Profile $Profile -ErrorAction Stop } catch { $after = $null; $result.errors += "Get-NetFirewallProfile(after): $($_.Exception.Message)"; $result.enforced = $false }
-  try { $afterActive = Get-NetFirewallProfile -Profile $Profile -PolicyStore ActiveStore -ErrorAction Stop } catch { $afterActive = $null; $result.errors += "Get-NetFirewallProfile(ActiveStore): $($_.Exception.Message)" }
+  if ($HasNetSecurity) {
+    try {
+      $afterActive = Get-NetFirewallProfile `
+        -Profile $Profile `
+        -PolicyStore ActiveStore `
+        -ErrorAction Stop
+    }
+    catch {
+      $afterActive = $null
+      $result.errors += "Get-NetFirewallProfile(ActiveStore): $($_.Exception.Message)"
+    }
+  }
+  else {
+    $afterActive = $null
+  }
 
   if ($afterActive) {
     if (($result.changes -contains 'log_allowed') -and -not (_B $afterActive.LogAllowed)) { $result.policy_blocked = $true }
@@ -190,7 +396,11 @@ try {
       name   = 'MpsSvc'
       status = if ($svc) { $svc.Status } else { 'NotFound' }
     }
-    modules        = @('NetSecurity')
+    modules        = if ($HasNetSecurity) {
+      @('NetSecurity')
+    } else {
+      @('HNetCfg.FwPolicy2', 'netsh advfirewall')
+    }
   }
   $lines += ($verify | ConvertTo-Json -Compress -Depth 5)
 
